@@ -3,6 +3,7 @@ project(handle_detector)
 
 ## find catkin and required packages
 find_package(catkin REQUIRED COMPONENTS 
+  cmake_modules
 	eigen_conversions 
   geometry_msgs 
 	message_generation   
