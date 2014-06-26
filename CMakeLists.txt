@@ -33,7 +33,16 @@ add_message_files(
   HandleListMsg.msg
 )
 
-generate_messages(DEPENDENCIES geometry_msgs)
+add_service_files(
+   FILES
+	 GraspPoseCandidates.srv
+)
+
+generate_messages(DEPENDENCIES 
+		geometry_msgs
+		std_msgs
+		pcl_msgs
+		visualization_msgs)
 
 ## Declare a catkin package
 catkin_package(
@@ -56,6 +65,7 @@ include_directories(${catkin_INCLUDE_DIRS})
 
 ## create executables
 add_executable(${PROJECT_NAME}_localization src/localization.cpp)
+add_executable(${PROJECT_NAME}_grasp_poses_service src/grasp_poses_service.cpp)
 
 ## create libraries
 add_library(${PROJECT_NAME}_affordances src/affordances.cpp)
@@ -72,6 +82,11 @@ target_link_libraries(${PROJECT_NAME}_localization ${PROJECT_NAME}_affordances)
 target_link_libraries(${PROJECT_NAME}_localization ${PROJECT_NAME}_visualizer)
 target_link_libraries(${PROJECT_NAME}_localization ${PROJECT_NAME}_messages)
 
+target_link_libraries(${PROJECT_NAME}_grasp_poses_service ${catkin_LIBRARIES})
+target_link_libraries(${PROJECT_NAME}_grasp_poses_service ${PROJECT_NAME}_affordances)
+target_link_libraries(${PROJECT_NAME}_grasp_poses_service ${PROJECT_NAME}_visualizer)
+target_link_libraries(${PROJECT_NAME}_grasp_poses_service ${PROJECT_NAME}_messages)
+
 ## link libraries to affordances library
 target_link_libraries(${PROJECT_NAME}_affordances ${catkin_LIBRARIES})
 target_link_libraries(${PROJECT_NAME}_affordances ${PROJECT_NAME}_cylindrical_shell)
@@ -81,13 +96,13 @@ target_link_libraries(${PROJECT_NAME}_affordances lapack)
 target_link_libraries(${PROJECT_NAME}_messages ${catkin_LIBRARIES})
 
 ## install targets
-install(TARGETS ${PROJECT_NAME}_localization ${PROJECT_NAME}_affordances 
-  ${PROJECT_NAME}_visualizer ${PROJECT_NAME}_messages ${PROJECT_NAME}_cylindrical_shell 
-  ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
-  LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
-  RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-)
+#install(TARGETS ${PROJECT_NAME}_localization ${PROJECT_NAME}_affordances 
+#  ${PROJECT_NAME}_visualizer ${PROJECT_NAME}_messages ${PROJECT_NAME}_cylindrical_shell 
+#  ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+#  LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+#  RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+#)
 
 ## install launch files
-install(DIRECTORY launch/
-  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/launch)
+#install(DIRECTORY launch/
+#  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/launch)
