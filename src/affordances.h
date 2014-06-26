@@ -183,23 +183,6 @@ class Affordances
      */
 		int numInFront(const PointCloud::Ptr &cloud, int center_index, double radius);
 
-    // parameters (read-in from ROS launch file)
-		double target_radius;
-		double radius_error;
-		double handle_gap;
-		int num_samples;
-		double max_range;
-		bool use_clearance_filter;
-		bool use_occlusion_filter;
-		int curvature_estimator;
-		int ransac_runs;
-		int ransac_min_inliers;
-		double ransac_dist_radius;
-		double ransac_orient_radius;
-		double ransac_radius_radius;
-		WorkspaceLimits workspace_limits;
-		int num_threads;
-    std::string file;
 		
 		// standard parameters
 		static const int CURVATURE_ESTIMATOR; // curvature axis estimation method
@@ -220,6 +203,25 @@ class Affordances
 		static const double RANSAC_RADIUS_RADIUS; // radius threshold
 		static const double WORKSPACE_MIN;
 		static const double WORKSPACE_MAX;
+
+	public:
+	    // parameters (read-in from ROS launch file)
+		double target_radius;
+		double radius_error;
+		double handle_gap;
+		int num_samples;
+		double max_range;
+		bool use_clearance_filter;
+		bool use_occlusion_filter;
+		int curvature_estimator;
+		int ransac_runs;
+		int ransac_min_inliers;
+		double ransac_dist_radius;
+		double ransac_orient_radius;
+		double ransac_radius_radius;
+		WorkspaceLimits workspace_limits;
+		int num_threads;
+	    std::string file;
 };
 
 #endif
