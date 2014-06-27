@@ -181,10 +181,9 @@ protected:
 			double angle = 2*M_PI/req.candidates_per_pose;
 
 			std::vector<handle_detector::CylinderArrayMsg> &handles = handles_msg.handles;
-			for(std::vector<handle_detector::CylinderArrayMsg>::iterator i = handles.begin();
-					i!=handles.end();i++)
+			for(int i = 0;i < handles.size(); i++)
 			{
-				handle_detector::CylinderArrayMsg &ca = *i;
+				handle_detector::CylinderArrayMsg &ca = handles[i];
 				std::vector<handle_detector::CylinderMsg> &c = ca.cylinders;
 
 				for(int j = 0; j < ca.cylinders.size();j++)
@@ -193,6 +192,8 @@ protected:
 
 					if(cylinder.radius*2 < req.gripper_workrange )
 					{
+
+						ROS_INFO_STREAM("Processing handle "<<i<<" with pose "<<cylinder.pose);
 
 						// converting msg to tf
 						tf::poseMsgToTF(cylinder.pose,cylinder_tf);
@@ -236,7 +237,7 @@ protected:
 						color.r=0;
 						color.g = 1;
 						color.b = 1;
-						color.a = 1;
+						color.a = 0.5f;
 						visualization_msgs::Marker marker;
 						marker.header.frame_id = req.planning_frame_id;
 						marker.type = marker.CYLINDER;
@@ -247,6 +248,8 @@ protected:
 						marker.scale.z = cylinder.extent;
 						marker.color = color;
 						res.candidate_objects.markers.push_back(marker);
+
+						break;
 
 					}
 				}
