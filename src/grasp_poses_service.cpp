@@ -15,6 +15,8 @@
 #include <pcl_ros/point_cloud.h>
 #include <pcl/point_types.h>
 #include <pcl/filters/passthrough.h>
+#include <pcl/segmentation/extract_polygonal_prism_data.h>
+#include <pcl/filters/extract_indices.h>
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <sstream>
@@ -22,7 +24,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <vector>
-//#include "visualizer.h"
+#include <godel_surface_detection/detection/surface_detection.h>
 #include <tf/transform_datatypes.h>
 #include <tf/transform_listener.h>
 #define EIGEN_DONT_PARALLELIZE
@@ -112,7 +114,7 @@ protected:
 
 		ROS_INFO_STREAM("Workspace bounds defined from "<<min<<" to "<<max);
 
-		return true;
+		return surf_detect_.load_parameters("~/surface_detection");
 	}
 
 	bool wait_for_point_cloud_msg(sensor_msgs::PointCloud2& msg)
@@ -156,13 +158,6 @@ protected:
 			tf::transformTFToEigen(world_to_sensor_tf,eigen3d);
 			pcl::transformPointCloud(sensor_cloud,sensor_cloud,Eigen::Affine3f(eigen3d));
 
-			// filtering workspace bounds
-			filter_workspace(sensor_cloud,filtered_cloud);
-
-			// publishing filtered cloud
-			pcl::toROSMsg(filtered_cloud,filtered_cloud_msg);
-			filtered_cloud_msg.header.frame_id = req.planning_frame_id;
-			filtered_cloud_pub_.publish(filtered_cloud_msg);
 		}
 		else
 		{
@@ -170,18 +165,45 @@ protected:
 			return false;
 		}
 
-
-
-		if( detect_handles(filtered_cloud,handles_msg) )
+		// filter workspace and find surfaces
+		std::vector<Cloud::Ptr> surfaces;
+		if(filter_workspace(sensor_cloud,filtered_cloud) && detect_surfaces(filtered_cloud,surfaces))
 		{
+			ROS_INFO_STREAM("Surfaces found: "<< surfaces.size());
+
+			for(int i = 0; i < surfaces.size();i++)
+			{
+				Cloud &surface = *surfaces[i];
+				handle_detector::HandleListMsg h;
+				if(detect_handles(surface,h))
+				{
+					handles_msg.handles.insert(handles_msg.handles.end(),h.handles.begin(),h.handles.end());
+					ROS_INFO_STREAM("Found "<<h.handles.size()<<" handles from surface "<<i);
+				}
+
+			}
+
+		}
+		else
+		{
+			ROS_ERROR_STREAM("Surfaces were not found, exiting");
+			return false;
+		}
+
+
+
+		if( !handles_msg.handles.empty() )
+		{
+			ROS_INFO_STREAM("Processing "<<handles_msg.handles.size()<<" candidate handles");
 
 			geometry_msgs::Pose grasp_pose,cylinder_pose;
 			tf::Transform grasp_tf, cylinder_tf;
 			tf::Vector3 normal,axis;
 			double angle = 2*M_PI/req.candidates_per_pose;
 
+			bool found = false;
 			std::vector<handle_detector::CylinderArrayMsg> &handles = handles_msg.handles;
-			for(int i = 0;i < handles.size(); i++)
+			for(int i = 0;i < handles.size() && !found; i++)
 			{
 				handle_detector::CylinderArrayMsg &ca = handles[i];
 				std::vector<handle_detector::CylinderMsg> &c = ca.cylinders;
@@ -200,11 +222,6 @@ protected:
 						tf::vector3MsgToTF(cylinder.normal,normal);
 						tf::vector3MsgToTF(cylinder.axis,axis);
 
-						// transforming to planning frame
-						cylinder_tf = world_to_sensor_tf*cylinder_tf;
-						normal = world_to_sensor_tf*normal;
-						axis = world_to_sensor_tf*axis;
-
 						tf::Vector3 rz_grasp = normal.normalized();
 						tf::Vector3 rx_grasp = axis.normalized();
 						tf::Vector3 ry_grasp = (rz_grasp.cross(rx_grasp)).normalized();
@@ -212,25 +229,33 @@ protected:
 /*						tf::Matrix3x3 rot_grasp = tf::Matrix3x3(rx_grasp.getX(),rx_grasp.getY(),rx_grasp.getZ(),
 								ry_grasp.getX(),ry_grasp.getY(),ry_grasp.getZ(),
 								rz_grasp.getX(),rx_grasp.getY(),rz_grasp.getZ());*/
-						tf::Quaternion rot_grasp = cylinder_tf.getRotation()*tf::Quaternion(ry_grasp,M_PI/2.0f);
+						tf::Quaternion rot_grasp = cylinder_tf.getRotation()*tf::Quaternion(tf::Vector3(1,0,0),M_PI/2.0f);
 
 						// creating multiple candidate poses
 						geometry_msgs::PoseArray grasp_poses;
-						for(int e = 0; e < req.candidates_per_pose;e++)
+						for(int e = -2; e < req.candidates_per_pose-2;e++)
 						{
 							// rotating about cylinder axis by the angle
 							//tf::Quaternion rot_about_axis = tf::Quaternion(rx_grasp,e*angle);
 							//grasp_tf.setBasis(rot_grasp * tf::Matrix3x3(rot_about_axis));
-							tf::Quaternion rot_about_axis = tf::Quaternion(tf::Vector3(1,0,0),e*angle);
+							tf::Quaternion rot_about_axis = tf::Quaternion(tf::Vector3(0,1,0),e*angle);
 							grasp_tf.setRotation(rot_grasp * rot_about_axis);
 
 							// setting position
+							//tf::Vector3 grasp_pos = cylinder_tf*tf::Vector3(0,0.,cylinder.extent);
 							grasp_tf.setOrigin(cylinder_tf.getOrigin());
 
 							tf::poseTFToMsg(grasp_tf,grasp_pose);
 							grasp_poses.poses.push_back(grasp_pose);
 						}
 						res.candidate_grasp_poses.push_back(grasp_poses);
+						ROS_INFO_STREAM("Grasp pose 0:\n"<<grasp_poses.poses[0]);
+
+						// filter cylinder from point cloud and publishing
+						filter_cylinder(cylinder,filtered_cloud,filtered_cloud);
+						pcl::toROSMsg(filtered_cloud,filtered_cloud_msg);
+						filtered_cloud_msg.header.frame_id = req.planning_frame_id;
+						filtered_cloud_pub_.publish(filtered_cloud_msg);
 
 						// creating cylinder marker
 						std_msgs::ColorRGBA color;
@@ -249,6 +274,7 @@ protected:
 						marker.color = color;
 						res.candidate_objects.markers.push_back(marker);
 
+						found = true;
 						break;
 
 					}
@@ -334,6 +360,26 @@ protected:
 		return !handles_msg.handles.empty();
 	}
 
+	bool detect_surfaces(Cloud& in,std::vector<Cloud::Ptr> &surfaces)
+	{
+		surf_detect_.clear_results();
+		surf_detect_.add_cloud(in);
+		if(surf_detect_.find_surfaces())
+		{
+			surfaces = surf_detect_.get_surface_clouds();
+		}
+
+		// printing results
+		std::stringstream ss;
+		for(int i = 0;i< surfaces.size();i++)
+		{
+			ss<<"Surface "<<i<<" with "<<surfaces[i]->size()<<" points\n";
+		}
+		ROS_INFO_STREAM_COND(!surfaces.empty(),"Surfaces details:\n"<<ss.str());
+
+		return !surfaces.empty();
+	}
+
 	bool filter_workspace(const Cloud &sensor_cloud,Cloud &filtered_cloud)
 	{
 		Cloud temp;
@@ -364,6 +410,48 @@ protected:
 		return !filtered_cloud.empty();
 	}
 
+	bool filter_cylinder(const handle_detector::CylinderMsg& cylinder_msg,const Cloud &in, Cloud &filtered)
+	{
+		// creating cylinder cloud
+		int num_points = 20;
+		double radius = 1.5f*cylinder_msg.radius;
+		double delta_rot = 2*M_PI/(num_points-1);
+		Cloud circle;
+		for(int i = 0;i < num_points;i++)
+		{
+			pcl::PointXYZ p;
+			p.x = radius*std::cos(i*delta_rot);
+			p.y = radius*std::sin(i*delta_rot);
+			p.z = 0;
+			circle.push_back(p);
+		}
+
+		// transforming circle to cylinder pose in world coordinates
+		tf::Transform cylinder_tf;
+		Eigen::Affine3d cylinder_eig;
+		tf::poseMsgToEigen(cylinder_msg.pose,cylinder_eig);
+		pcl::transformPointCloud(circle,circle,Eigen::Affine3f(cylinder_eig));
+
+		// extract points
+		pcl::ExtractPolygonalPrismData<pcl::PointXYZ> prism;
+		pcl::ExtractIndices<pcl::PointXYZ> extract;
+		pcl::PointIndices::Ptr inliers(new pcl::PointIndices());
+
+		prism.setInputCloud(in.makeShared());
+		prism.setInputPlanarHull(circle.makeShared());
+		prism.setHeightLimits(-cylinder_msg.extent,cylinder_msg.extent);
+		prism.setViewPoint(0,0,10);
+		prism.segment(*inliers);
+
+		// extracting remaining points
+		extract.setInputCloud(in.makeShared());
+		extract.setIndices(inliers);
+		extract.setNegative(true);
+		extract.filter(filtered);
+
+		return !inliers->indices.empty();
+	}
+
 
 protected:
 
@@ -386,6 +474,9 @@ protected:
 
 	// handle detection
 	Affordances affordances_;
+
+	// surface detection
+	godel_surface_detection::detection::SurfaceDetection surf_detect_;
 };
 
 int main(int argc,char** argv)

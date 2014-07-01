@@ -13,7 +13,8 @@ find_package(catkin REQUIRED COMPONENTS
   std_msgs 
 	tf
 	tf_conversions
-  visualization_msgs)
+  visualization_msgs
+	godel_surface_detection)
 
 ## find Lapack
 find_package(LAPACK REQUIRED)
