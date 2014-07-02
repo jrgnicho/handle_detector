@@ -3,11 +3,9 @@
 #include "handle_detector/CylinderMsg.h"
 #include "handle_detector/HandleListMsg.h"
 #include <handle_detector/GraspPoseCandidates.h>
-#include <ctype.h>
 #include "cylindrical_shell.h"
 #include "Eigen/Dense"
 #include "Eigen/Core"
-#include <iostream>
 #include "messages.h"
 #include <pcl/common/common.h>
 #include <pcl_ros/transforms.h>
@@ -17,13 +15,11 @@
 #include <pcl/filters/passthrough.h>
 #include <pcl/segmentation/extract_polygonal_prism_data.h>
 #include <pcl/filters/extract_indices.h>
+#include <pcl/common/distances.h>
+#include <pcl/ModelCoefficients.h>
+#include <pcl/filters/project_inliers.h>
 #include <ros/ros.h>
 #include <sensor_msgs/PointCloud2.h>
-#include <sstream>
-#include <stdlib.h> 
-#include <stdio.h>
-#include <string.h>
-#include <vector>
 #include <godel_surface_detection/detection/surface_detection.h>
 #include <tf/transform_datatypes.h>
 #include <tf/transform_listener.h>
@@ -144,7 +140,7 @@ protected:
 	{
 		sensor_msgs::PointCloud2 sensor_cloud_msg,filtered_cloud_msg;
 		handle_detector::HandleListMsg handles_msg;
-		Cloud sensor_cloud, filtered_cloud;
+		Cloud sensor_cloud, workspace_cloud,filtered_cloud, handle_cloud;
 		tf::Transform world_to_sensor_tf;
 		Eigen::Affine3d eigen3d;
 
@@ -167,21 +163,9 @@ protected:
 
 		// filter workspace and find surfaces
 		std::vector<Cloud::Ptr> surfaces;
-		if(filter_workspace(sensor_cloud,filtered_cloud) && detect_surfaces(filtered_cloud,surfaces))
+		if(filter_workspace(sensor_cloud,workspace_cloud) && detect_surfaces(workspace_cloud,surfaces))
 		{
 			ROS_INFO_STREAM("Surfaces found: "<< surfaces.size());
-
-			for(int i = 0; i < surfaces.size();i++)
-			{
-				Cloud &surface = *surfaces[i];
-				handle_detector::HandleListMsg h;
-				if(detect_handles(surface,h))
-				{
-					handles_msg.handles.insert(handles_msg.handles.end(),h.handles.begin(),h.handles.end());
-					ROS_INFO_STREAM("Found "<<h.handles.size()<<" handles from surface "<<i);
-				}
-
-			}
 
 		}
 		else
@@ -191,115 +175,146 @@ protected:
 		}
 
 
-
-		if( !handles_msg.handles.empty() )
+		// finding grasp candidates
+		geometry_msgs::PoseArray poses;
+		visualization_msgs::Marker marker;
+		handle_detector::CylinderMsg cylinder;
+		for(int i = 0; i < surfaces.size();i++)
 		{
-			ROS_INFO_STREAM("Processing "<<handles_msg.handles.size()<<" candidate handles");
+			Cloud &surface = *surfaces[i];
+			handle_detector::HandleListMsg h;
 
-			geometry_msgs::Pose grasp_pose,cylinder_pose;
-			tf::Transform grasp_tf, cylinder_tf;
-			tf::Vector3 normal,axis;
-			double angle = 2*M_PI/req.candidates_per_pose;
-
-			bool found = false;
-			std::vector<handle_detector::CylinderArrayMsg> &handles = handles_msg.handles;
-			for(int i = 0;i < handles.size() && !found; i++)
+			// finding handles
+			if(detect_handles(surface,h))
 			{
-				handle_detector::CylinderArrayMsg &ca = handles[i];
-				std::vector<handle_detector::CylinderMsg> &c = ca.cylinders;
-
-				for(int j = 0; j < ca.cylinders.size();j++)
-				{
-					handle_detector::CylinderMsg &cylinder = ca.cylinders[j];
-
-					if(cylinder.radius*2 < req.gripper_workrange )
-					{
-
-						ROS_INFO_STREAM("Processing handle "<<i<<" with pose "<<cylinder.pose);
-
-						// converting msg to tf
-						tf::poseMsgToTF(cylinder.pose,cylinder_tf);
-						tf::vector3MsgToTF(cylinder.normal,normal);
-						tf::vector3MsgToTF(cylinder.axis,axis);
-
-						tf::Vector3 rz_grasp = normal.normalized();
-						tf::Vector3 rx_grasp = axis.normalized();
-						tf::Vector3 ry_grasp = (rz_grasp.cross(rx_grasp)).normalized();
-
-/*						tf::Matrix3x3 rot_grasp = tf::Matrix3x3(rx_grasp.getX(),rx_grasp.getY(),rx_grasp.getZ(),
-								ry_grasp.getX(),ry_grasp.getY(),ry_grasp.getZ(),
-								rz_grasp.getX(),rx_grasp.getY(),rz_grasp.getZ());*/
-						tf::Quaternion rot_grasp = cylinder_tf.getRotation()*tf::Quaternion(tf::Vector3(1,0,0),M_PI/2.0f);
-
-						// creating multiple candidate poses
-						geometry_msgs::PoseArray grasp_poses;
-						for(int e = -2; e < req.candidates_per_pose-2;e++)
-						{
-							// rotating about cylinder axis by the angle
-							//tf::Quaternion rot_about_axis = tf::Quaternion(rx_grasp,e*angle);
-							//grasp_tf.setBasis(rot_grasp * tf::Matrix3x3(rot_about_axis));
-							tf::Quaternion rot_about_axis = tf::Quaternion(tf::Vector3(0,1,0),e*angle);
-							grasp_tf.setRotation(rot_grasp * rot_about_axis);
-
-							// setting position
-							//tf::Vector3 grasp_pos = cylinder_tf*tf::Vector3(0,0.,cylinder.extent);
-							grasp_tf.setOrigin(cylinder_tf.getOrigin());
-
-							tf::poseTFToMsg(grasp_tf,grasp_pose);
-							grasp_poses.poses.push_back(grasp_pose);
-						}
-						res.candidate_grasp_poses.push_back(grasp_poses);
-						ROS_INFO_STREAM("Grasp pose 0:\n"<<grasp_poses.poses[0]);
-
-						// filter cylinder from point cloud and publishing
-						filter_cylinder(cylinder,filtered_cloud,filtered_cloud);
-						pcl::toROSMsg(filtered_cloud,filtered_cloud_msg);
-						filtered_cloud_msg.header.frame_id = req.planning_frame_id;
-						filtered_cloud_pub_.publish(filtered_cloud_msg);
-
-						// creating cylinder marker
-						std_msgs::ColorRGBA color;
-						color.r=0;
-						color.g = 1;
-						color.b = 1;
-						color.a = 0.5f;
-						visualization_msgs::Marker marker;
-						marker.header.frame_id = req.planning_frame_id;
-						marker.type = marker.CYLINDER;
-						marker.action = marker.ADD;
-						marker.pose = cylinder.pose;
-						marker.ns = "handles";
-						marker.scale.x = marker.scale.y = cylinder.radius*2;
-						marker.scale.z = cylinder.extent;
-						marker.color = color;
-						res.candidate_objects.markers.push_back(marker);
-
-						found = true;
-						break;
-
-					}
-				}
-
-			}
-
-			if(!res.candidate_grasp_poses.empty())
-			{
-				ROS_INFO_STREAM("Found "<<res.candidate_grasp_poses.size()<<" graspable handles");
-				handle_makers_pub_.publish(res.candidate_objects);
+				ROS_INFO_STREAM("Found "<<h.handles.size()<<" handles from surface "<<i);
 			}
 			else
 			{
-				ROS_ERROR_STREAM("Found 0 graspable handles");
+				continue;
 			}
 
+			// finding candidate poses
+			poses.poses.clear();
+			if(find_candidate_poses(h,surface,req,poses,cylinder))
+			{
+				ROS_INFO_STREAM("Found "<<poses.poses.size()<<" candidate poses for surface "<<i);
+				res.candidate_grasp_poses.push_back(poses);
+			}
+			else
+			{
+				continue;
+			}
+
+			// creating marker
+			create_marker(cylinder,marker);
+			marker.header.frame_id = req.planning_frame_id;
+			res.candidate_objects.markers.push_back(marker);
+
+			// filtering cylinder from workspace and publishing filtered cloud;
+			filter_cylinder(cylinder,workspace_cloud,filtered_cloud,handle_cloud);
+			filtered_cloud.header.frame_id = req.planning_frame_id;
+			pcl::toROSMsg(filtered_cloud,filtered_cloud_msg);
+			filtered_cloud_pub_.publish(filtered_cloud_msg);
+
+			break;
+
+		}
+
+		// printing results
+		if(!res.candidate_grasp_poses.empty())
+		{
+			ROS_INFO_STREAM("Found "<<res.candidate_grasp_poses.size()<<" graspable handles");
+			handle_makers_pub_.publish(res.candidate_objects);
 		}
 		else
 		{
-			//res.succeeded = false;
-			return false;
+			ROS_ERROR_STREAM("Found 0 graspable handles");
 		}
 
 		return !res.candidate_grasp_poses.empty();
+	}
+
+	bool find_candidate_poses(const handle_detector::HandleListMsg& handle_msg,const Cloud& cluster,
+			const handle_detector::GraspPoseCandidates::Request& req,geometry_msgs::PoseArray &candidate_poses,
+			handle_detector::CylinderMsg &selected_cylinder)
+	{
+		geometry_msgs::Pose grasp_pose,cylinder_pose;
+		tf::Transform grasp_tf, cylinder_tf;
+		tf::Vector3 normal,axis;
+		double angle = 2*M_PI/req.candidates_per_pose;
+		bool found = false;
+
+		// collecting all cylinders
+		std::vector<handle_detector::CylinderMsg> c;
+		for(int i =0;i < handle_msg.handles.size();i++)
+		{
+			const handle_detector::CylinderArrayMsg& c_temp = handle_msg.handles[i];
+			c.insert(c.end(),c_temp.cylinders.begin(),c_temp.cylinders.end());
+		}
+
+		for(int j = 0; j < c.size();j++)
+		{
+			handle_detector::CylinderMsg &cylinder = c[j];
+
+			if(cylinder.radius*2 < req.gripper_workrange )
+			{
+				ROS_INFO_STREAM("Processing handle "<<j<<" with pose "<<cylinder.pose);
+
+				// filtering points in handle
+				Cloud filtered, handle;
+				cylinder.extent = 2.0f;
+				filter_cylinder(cylinder,cluster,filtered,handle);
+
+				// fitting candidate cylinder to data
+				fit_cylinder_to_cluster(cylinder,handle,cylinder);
+
+				tf::poseMsgToTF(cylinder.pose,cylinder_tf);
+
+				// rotating about local x axis to create target pose (local z vector pointing away)
+				tf::Quaternion rot_grasp = cylinder_tf.getRotation()*tf::Quaternion(tf::Vector3(1,0,0),M_PI/2.0f);
+
+				// creating multiple candidate poses
+				for(int e = -2; e < req.candidates_per_pose-2;e++)
+				{
+					// rotating about cylinder axis in order to change the direction of local z vector
+					tf::Quaternion rot_about_axis = tf::Quaternion(tf::Vector3(0,1,0),e*angle);
+					grasp_tf.setRotation(rot_grasp * rot_about_axis);
+
+					// setting position
+					grasp_tf.setOrigin(cylinder_tf.getOrigin());
+
+					tf::poseTFToMsg(grasp_tf,grasp_pose);
+					candidate_poses.poses.push_back(grasp_pose);
+				}
+
+				// copying cylinder
+				selected_cylinder = cylinder;
+
+				found = true;
+				break;
+
+			}
+		}
+
+		return found;
+	}
+
+	void create_marker(const handle_detector::CylinderMsg& cylinder, visualization_msgs::Marker &marker)
+	{
+		// creating cylinder marker
+		std_msgs::ColorRGBA color;
+		color.r=0;
+		color.g = 1;
+		color.b = 1;
+		color.a = 0.5f;
+		marker.type = marker.CYLINDER;
+		marker.action = marker.ADD;
+		marker.pose = cylinder.pose;
+		marker.ns = "handles";
+		marker.scale.x = marker.scale.y = cylinder.radius*2;
+		marker.scale.z = cylinder.extent;
+		marker.color = color;
 	}
 
 	bool lookup_transform(std::string planning_frame_id,std::string source_frame_id,tf::Transform &t)
@@ -410,7 +425,7 @@ protected:
 		return !filtered_cloud.empty();
 	}
 
-	bool filter_cylinder(const handle_detector::CylinderMsg& cylinder_msg,const Cloud &in, Cloud &filtered)
+	bool filter_cylinder(const handle_detector::CylinderMsg& cylinder_msg,const Cloud &source, Cloud &filtered,Cloud& cylinder)
 	{
 		// creating cylinder cloud
 		int num_points = 20;
@@ -426,6 +441,10 @@ protected:
 			circle.push_back(p);
 		}
 
+		// copying point cloud
+		Cloud in;
+		pcl::copyPointCloud(source,in);
+
 		// transforming circle to cylinder pose in world coordinates
 		tf::Transform cylinder_tf;
 		Eigen::Affine3d cylinder_eig;
@@ -439,7 +458,7 @@ protected:
 
 		prism.setInputCloud(in.makeShared());
 		prism.setInputPlanarHull(circle.makeShared());
-		prism.setHeightLimits(-cylinder_msg.extent,cylinder_msg.extent);
+		prism.setHeightLimits(-0.5f*cylinder_msg.extent,0.5f*cylinder_msg.extent);
 		prism.setViewPoint(0,0,10);
 		prism.segment(*inliers);
 
@@ -448,8 +467,62 @@ protected:
 		extract.setIndices(inliers);
 		extract.setNegative(true);
 		extract.filter(filtered);
-
+		extract.setNegative(false);
+		extract.filter(cylinder);
 		return !inliers->indices.empty();
+	}
+
+	bool fit_cylinder_to_cluster(const handle_detector::CylinderMsg& cylinder_estimate, const Cloud& cluster,
+			handle_detector::CylinderMsg &cylinder_fitted)
+	{
+		// finding extend
+		pcl::PointXYZ min,max;
+		handle_detector::CylinderMsg cylinder_refined;
+		cylinder_refined = cylinder_estimate;
+		cylinder_refined.extent = pcl::getMaxSegment(cluster,min,max);// plus 20%
+
+		// preparing cylinder info
+		tf::Vector3 axis;
+		tf::Vector3 pos;
+		pcl::ModelCoefficients::Ptr coeff_ptr(new pcl::ModelCoefficients());
+		tf::vector3MsgToTF(cylinder_estimate.axis,axis);
+		tf::pointMsgToTF(cylinder_estimate.pose.position,pos);
+		axis.normalize();
+
+		// filing cylinder axis coefficients
+		coeff_ptr->values.resize(6);
+		coeff_ptr->values[0] = pos.getX();coeff_ptr->values[1] = pos.getY();coeff_ptr->values[2] = pos.getZ();
+		coeff_ptr->values[3] = axis.getX();coeff_ptr->values[4] = axis.getY();coeff_ptr->values[5] = axis.getZ();
+
+		Cloud extends;
+		Cloud projected;
+		extends.push_back(min);
+		extends.push_back(max);
+
+		// projecting poinst onto line
+		pcl::ProjectInliers<pcl::PointXYZ> proj;
+		proj.setModelType(pcl::SACMODEL_LINE);
+		proj.setInputCloud(extends.makeShared());
+		proj.setModelCoefficients(coeff_ptr);
+		proj.filter(projected);
+
+		if(!projected.empty())
+		{
+			// modifing cylinder position so that it is in the middle of the projected min and max
+			pcl::PointXYZ new_min = projected.points[0];
+			tf::Vector3 min_proj = tf::Vector3(new_min.x,new_min.y,new_min.z);
+			axis = (pos-min_proj).normalized();
+			tf::Vector3 new_pos = min_proj + cylinder_refined.extent*0.5f*axis;
+			tf::pointTFToMsg(new_pos,cylinder_refined.pose.position);
+
+			ROS_INFO_STREAM("Cylinder position changed from:\n"<<cylinder_estimate.pose.position<<
+					"\n to: \n"<<cylinder_refined.pose.position);
+		}
+
+		cylinder_fitted = cylinder_refined;
+
+
+		return !projected.empty();
 	}
 
 
