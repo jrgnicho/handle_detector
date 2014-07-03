@@ -14,7 +14,8 @@ find_package(catkin REQUIRED COMPONENTS
 	tf
 	tf_conversions
   visualization_msgs
-	godel_surface_detection)
+	godel_surface_detection
+	moveit_msgs)
 
 ## find Lapack
 find_package(LAPACK REQUIRED)
@@ -43,7 +44,8 @@ generate_messages(DEPENDENCIES
 		geometry_msgs
 		std_msgs
 		pcl_msgs
-		visualization_msgs)
+		visualization_msgs
+		moveit_msgs)
 
 ## Declare a catkin package
 catkin_package(

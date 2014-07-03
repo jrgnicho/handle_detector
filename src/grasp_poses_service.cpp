@@ -178,6 +178,7 @@ protected:
 		// finding grasp candidates
 		geometry_msgs::PoseArray poses;
 		visualization_msgs::Marker marker;
+		moveit_msgs::CollisionObject col;
 		handle_detector::CylinderMsg cylinder;
 		for(int i = 0; i < surfaces.size();i++)
 		{
@@ -210,6 +211,14 @@ protected:
 			create_marker(cylinder,marker);
 			marker.header.frame_id = req.planning_frame_id;
 			res.candidate_objects.markers.push_back(marker);
+
+			// creating collision object
+			std::stringstream ss;
+			ss<<"cylinder"<<i;
+			create_collision_obj(cylinder,col);
+			col.header.frame_id = req.planning_frame_id;
+			col.id = ss.str();
+			res.candidate_collision_objects.push_back(col);
 
 			// filtering cylinder from workspace and publishing filtered cloud;
 			filter_cylinder(cylinder,workspace_cloud,filtered_cloud,handle_cloud);
@@ -523,6 +532,20 @@ protected:
 
 
 		return !projected.empty();
+	}
+
+	void create_collision_obj(const handle_detector::CylinderMsg& c,moveit_msgs::CollisionObject obj)
+	{
+		// creating shape
+		shape_msgs::SolidPrimitive shape;
+		shape.CYLINDER;
+	    shape.dimensions.resize(2);
+	    shape.dimensions[shape.CYLINDER_HEIGHT] = c.extent;
+	    shape.dimensions[shape.CYLINDER_RADIUS] = c.radius;
+
+	    obj.primitives.push_back(shape);
+	    obj.primitive_poses.push_back(c.pose);
+	    obj.operation = obj.ADD;
 	}
 
 
