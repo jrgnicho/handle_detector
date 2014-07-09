@@ -180,6 +180,7 @@ protected:
 		visualization_msgs::Marker marker;
 		moveit_msgs::CollisionObject col;
 		handle_detector::CylinderMsg cylinder;
+		int selected_index = -1;
 		for(int i = 0; i < surfaces.size();i++)
 		{
 			Cloud &surface = *surfaces[i];
@@ -219,12 +220,9 @@ protected:
 			col.header.frame_id = req.planning_frame_id;
 			col.id = ss.str();
 			res.candidate_collision_objects.push_back(col);
+			selected_index = i;
 
-			// filtering cylinder from workspace and publishing filtered cloud;
-			filter_cylinder(cylinder,workspace_cloud,filtered_cloud,handle_cloud);
-			filtered_cloud.header.frame_id = req.planning_frame_id;
-			pcl::toROSMsg(filtered_cloud,filtered_cloud_msg);
-			filtered_cloud_pub_.publish(filtered_cloud_msg);
+
 
 			break;
 
@@ -233,6 +231,19 @@ protected:
 		// printing results
 		if(!res.candidate_grasp_poses.empty())
 		{
+			// filtering cylinder from workspace and publishing filtered cloud;
+			//filter_cylinder(cylinder,workspace_cloud,filtered_cloud,handle_cloud);
+			surfaces.erase(surfaces.begin() + selected_index);
+
+			for(int i = 0;i < surfaces.size();i++)
+			{
+				filtered_cloud+=*surfaces[i];
+			}
+
+			filtered_cloud.header.frame_id = req.planning_frame_id;
+			pcl::toROSMsg(filtered_cloud,filtered_cloud_msg);
+			filtered_cloud_pub_.publish(filtered_cloud_msg);
+
 			ROS_INFO_STREAM("Found "<<res.candidate_grasp_poses.size()<<" graspable handles");
 			handle_makers_pub_.publish(res.candidate_objects);
 		}
@@ -534,11 +545,11 @@ protected:
 		return !projected.empty();
 	}
 
-	void create_collision_obj(const handle_detector::CylinderMsg& c,moveit_msgs::CollisionObject obj)
+	void create_collision_obj(const handle_detector::CylinderMsg& c,moveit_msgs::CollisionObject &obj)
 	{
 		// creating shape
 		shape_msgs::SolidPrimitive shape;
-		shape.CYLINDER;
+		shape.type = shape.CYLINDER;
 	    shape.dimensions.resize(2);
 	    shape.dimensions[shape.CYLINDER_HEIGHT] = c.extent;
 	    shape.dimensions[shape.CYLINDER_RADIUS] = c.radius;
