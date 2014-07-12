@@ -14,6 +14,8 @@
 #include <pcl/point_types.h>
 #include <pcl/filters/passthrough.h>
 #include <pcl/segmentation/extract_polygonal_prism_data.h>
+#include <pcl/sample_consensus/ransac.h>
+#include <pcl/sample_consensus/sac_model_plane.h>
 #include <pcl/filters/extract_indices.h>
 #include <pcl/common/distances.h>
 #include <pcl/ModelCoefficients.h>
@@ -138,10 +140,11 @@ protected:
 	bool grasp_pose_service_callback(handle_detector::GraspPoseCandidates::Request& req,
 			handle_detector::GraspPoseCandidates::Response& res)
 	{
-		sensor_msgs::PointCloud2 sensor_cloud_msg,filtered_cloud_msg;
+		sensor_msgs::PointCloud2 sensor_cloud_msg,obstacle_cloud_msg;
 		handle_detector::HandleListMsg handles_msg;
-		Cloud sensor_cloud, workspace_cloud,filtered_cloud, handle_cloud;
+		Cloud sensor_cloud, workspace_cloud,obstacle_cloud, handle_cloud, table;
 		tf::Transform world_to_sensor_tf;
+		std::vector<Cloud::Ptr> surfaces;
 		Eigen::Affine3d eigen3d;
 
 		if(wait_for_point_cloud_msg(sensor_cloud_msg))
@@ -161,9 +164,32 @@ protected:
 			return false;
 		}
 
+		// removing workspace and table
+		if(filter_workspace(sensor_cloud,workspace_cloud))
+		{
+
+			ROS_INFO_STREAM("Workspace bounds removal completed, "<< surfaces.size()<<" points remain");
+
+		}
+		else
+		{
+			ROS_ERROR_STREAM("Workspace bounds removal returned with no points, exiting");
+			return false;
+		}
+
+		// removing table
+		if(filter_tabletop(workspace_cloud,workspace_cloud,table))
+		{
+			obstacle_cloud += table;
+			ROS_INFO_STREAM("Tabletop successfully removed, points in table: "<<table.size());
+		}
+		else
+		{
+			ROS_WARN_STREAM("Tabletop removal found no predominant surface");
+		}
+
 		// filter workspace and find surfaces
-		std::vector<Cloud::Ptr> surfaces;
-		if(filter_workspace(sensor_cloud,workspace_cloud) && detect_surfaces(workspace_cloud,surfaces))
+		if(detect_surfaces(workspace_cloud,surfaces))
 		{
 			ROS_INFO_STREAM("Surfaces found: "<< surfaces.size());
 
@@ -190,6 +216,7 @@ protected:
 			if(detect_handles(surface,h))
 			{
 				ROS_INFO_STREAM("Found "<<h.handles.size()<<" handles from surface "<<i);
+
 			}
 			else
 			{
@@ -222,8 +249,8 @@ protected:
 			res.candidate_collision_objects.push_back(col);
 			selected_index = i;
 
-
-
+			// removing handle from surface
+			filter_cylinder(cylinder,surface,surface,handle_cloud);
 			break;
 
 		}
@@ -231,18 +258,16 @@ protected:
 		// printing results
 		if(!res.candidate_grasp_poses.empty())
 		{
-			// filtering cylinder from workspace and publishing filtered cloud;
-			//filter_cylinder(cylinder,workspace_cloud,filtered_cloud,handle_cloud);
-			surfaces.erase(surfaces.begin() + selected_index);
+			ROS_INFO_STREAM("Adding "<<surfaces.size()<<" obstacles to obstacle point cloud");
 
 			for(int i = 0;i < surfaces.size();i++)
 			{
-				filtered_cloud+=*surfaces[i];
+				obstacle_cloud+=*surfaces[i];
 			}
 
-			filtered_cloud.header.frame_id = req.planning_frame_id;
-			pcl::toROSMsg(filtered_cloud,filtered_cloud_msg);
-			filtered_cloud_pub_.publish(filtered_cloud_msg);
+			obstacle_cloud.header.frame_id = req.planning_frame_id;
+			pcl::toROSMsg(obstacle_cloud,obstacle_cloud_msg);
+			filtered_cloud_pub_.publish(obstacle_cloud_msg);
 
 			ROS_INFO_STREAM("Found "<<res.candidate_grasp_poses.size()<<" graspable handles");
 			handle_makers_pub_.publish(res.candidate_objects);
@@ -443,6 +468,32 @@ protected:
 
 
 		return !filtered_cloud.empty();
+	}
+
+	bool filter_tabletop(const Cloud &in,Cloud &filtered,Cloud &table)
+	{
+		pcl::ExtractIndices<pcl::PointXYZ> extract;
+		pcl::PointIndices::Ptr inliers(new pcl::PointIndices());
+		pcl::SampleConsensusModelPlane<pcl::PointXYZ>::Ptr model_ptr(
+				new pcl::SampleConsensusModelPlane<pcl::PointXYZ>(in.makeShared()));
+		pcl::RandomSampleConsensus<pcl::PointXYZ> sac (model_ptr, 0.02f);
+
+		if(sac.computeModel())
+		{
+			sac.getInliers(inliers->indices);
+			extract.setNegative(false);
+
+			// extracting
+			extract.setInputCloud(in.makeShared());
+			extract.setIndices(inliers);
+			extract.setNegative(true);
+			extract.filter(filtered);
+			extract.setNegative(false);
+			extract.filter(table);
+
+		}
+
+		return !table.empty();
 	}
 
 	bool filter_cylinder(const handle_detector::CylinderMsg& cylinder_msg,const Cloud &source, Cloud &filtered,Cloud& cylinder)
