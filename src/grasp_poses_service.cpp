@@ -119,22 +119,30 @@ protected:
 	{
 		// grab sensor data snapshot
 		ros::NodeHandle nh;
-		sensor_msgs::PointCloud2ConstPtr msg_ptr =
-				ros::topic::waitForMessage<sensor_msgs::PointCloud2>(SENSOR_CLOUD_TOPIC,nh,
-						ros::Duration(WAIT_FOR_MESSAGE_TIMEOUT));
-
-		// check for empty message
-		if(msg_ptr != sensor_msgs::PointCloud2ConstPtr())
+		int attempts = 20;
+		bool found = false;
+		while(ros::ok() && attempts-- > 0)
 		{
-			ROS_INFO_STREAM("grasp planner server received point cloud msg in frame "<<msg_ptr->header.frame_id);
-			msg = *msg_ptr;
-		}
-		else
-		{
-			ROS_ERROR_STREAM("grasp planner server could not received cloud msg");
+			sensor_msgs::PointCloud2ConstPtr msg_ptr =
+					ros::topic::waitForMessage<sensor_msgs::PointCloud2>(SENSOR_CLOUD_TOPIC,nh,
+							ros::Duration(WAIT_FOR_MESSAGE_TIMEOUT));
+
+			// check for empty message and time stamp
+			if(msg_ptr != sensor_msgs::PointCloud2ConstPtr() &&
+					(ros::Time::now() - msg_ptr->header.stamp < ros::Duration(4)))
+			{
+				ROS_INFO_STREAM("grasp planner server received point cloud msg in frame "<<msg_ptr->header.frame_id);
+				msg = *msg_ptr;
+				found = true;
+				break;
+			}
+			else
+			{
+				ROS_ERROR_STREAM("grasp planner server could not received cloud msg");
+			}
 		}
 
-		return msg_ptr != sensor_msgs::PointCloud2ConstPtr();
+		return found;
 	}
 
 	bool grasp_pose_service_callback(handle_detector::GraspPoseCandidates::Request& req,
@@ -491,6 +499,32 @@ protected:
 			extract.setNegative(false);
 			extract.filter(table);
 
+		}
+
+		if(table.empty())
+		{
+			return false;
+		}
+		else
+		{
+
+			// finding centroid
+			Eigen::Vector4d centroid;
+			pcl::compute3DCentroid(table,centroid);
+
+			// filtering points below table
+			Cloud below;
+			pcl::PassThrough<pcl::PointXYZ> filter;
+			filter.setInputCloud(filtered.makeShared());
+			filter.setFilterFieldName("z");
+			filter.setFilterLimits(workspace_min_.getZ(),centroid[2]);
+			filter.setNegative(true);
+			filter.filter(filtered);
+			filter.setNegative(false);
+			filter.filter(below);
+
+			// adding extra points to table
+			table += below;
 		}
 
 		return !table.empty();
