@@ -110,6 +110,8 @@ protected:
 		tf::vector3TFToMsg(workspace_min_,min);
 		tf::vector3TFToMsg(workspace_max_,max);
 
+		ph.param<double>("min_handle_radius",min_radius_,0.05f);
+
 		ROS_INFO_STREAM("Workspace bounds defined from "<<min<<" to "<<max);
 
 		return surf_detect_.load_parameters("~/surface_detection");
@@ -258,7 +260,8 @@ protected:
 			selected_index = i;
 
 			// removing handle from surface
-			filter_cylinder(cylinder,surface,surface,handle_cloud);
+			//filter_cylinder(cylinder,surface,surface,handle_cloud);
+			surface.clear();
 			break;
 
 		}
@@ -300,10 +303,28 @@ protected:
 
 		// collecting all cylinders
 		std::vector<handle_detector::CylinderMsg> c;
+
 		for(int i =0;i < handle_msg.handles.size();i++)
 		{
 			const handle_detector::CylinderArrayMsg& c_temp = handle_msg.handles[i];
-			c.insert(c.end(),c_temp.cylinders.begin(),c_temp.cylinders.end());
+			//c.insert(c.end(),c_temp.cylinders.begin(),c_temp.cylinders.end());
+			ROS_INFO_STREAM("Handle "<< i <<" contains "<<c_temp.cylinders.size()<<" cylinders");
+
+			// computing average
+			handle_detector::CylinderMsg cylinder = c_temp.cylinders[0];
+			double radius_averg = 0;
+			double extend_averg = 0;
+			for(int j = 0; j <c_temp.cylinders.size(); j++ )
+			{
+				radius_averg = radius_averg + c_temp.cylinders[j].radius;
+				extend_averg = extend_averg + c_temp.cylinders[j].extent;
+			}
+			cylinder.radius = radius_averg/c_temp.cylinders.size();
+			cylinder.radius = cylinder.radius > min_radius_? cylinder.radius : min_radius_;
+			cylinder.extent = extend_averg/c_temp.cylinders.size();
+
+			// saving average cylinder
+			c.push_back(cylinder);
 		}
 
 		for(int j = 0; j < c.size();j++)
@@ -663,6 +684,7 @@ protected:
 	// parameters
 	tf::Vector3 workspace_min_;
 	tf::Vector3 workspace_max_;
+	double min_radius_;
 
 	// handle detection
 	Affordances affordances_;
